@@ -156,11 +156,42 @@ class WarpEngine:
             src_x = np.clip(np.round(cand_map_x), 0, roi_w - 1).astype(np.int32)
             src_y = np.clip(np.round(cand_map_y), 0, roi_h - 1).astype(np.int32)
             
-            # Only apply displacement if candidate source pixel is classified as skin
+            # Check skin classifications for source and destination
             is_src_skin = binary_mask[src_y, src_x] > 127
+            is_dst_skin = binary_mask > 127
             
-            # Update warp mapping strictly for skin-to-skin transitions
-            valid_warp = mask_influence & is_src_skin
+            # Identify where destination is skin but source candidate is background (tearing boundary)
+            clamp_mask = mask_influence & is_dst_skin & (~is_src_skin)
+            
+            if np.any(clamp_mask):
+                # Vectorized binary search along the drag vector to find the skin boundary
+                disp_2d = np.zeros_like(map_x)
+                disp_2d[mask_influence] = disp
+                
+                low = np.zeros_like(map_x)
+                high = disp_2d
+                
+                for _ in range(4):
+                    mid = (low + high) / 2.0
+                    tx = grid_x - mid * ux
+                    ty = grid_y - mid * uy
+                    
+                    tx_c = np.clip(np.round(tx), 0, roi_w - 1).astype(np.int32)
+                    ty_c = np.clip(np.round(ty), 0, roi_h - 1).astype(np.int32)
+                    
+                    is_mid_skin = binary_mask[ty_c, tx_c] > 127
+                    
+                    mid_skin_clamp = is_mid_skin & clamp_mask
+                    mid_bg_clamp = (~is_mid_skin) & clamp_mask
+                    
+                    low[mid_skin_clamp] = mid[mid_skin_clamp]
+                    high[mid_bg_clamp] = mid[mid_bg_clamp]
+                    
+                cand_map_x[clamp_mask] = grid_x[clamp_mask] - (low[clamp_mask] * ux).astype(np.float32)
+                cand_map_y[clamp_mask] = grid_y[clamp_mask] - (low[clamp_mask] * uy).astype(np.float32)
+                
+            # Update warp mapping strictly when either destination or source is skin
+            valid_warp = mask_influence & (is_dst_skin | is_src_skin)
             map_x[valid_warp] = cand_map_x[valid_warp]
             map_y[valid_warp] = cand_map_y[valid_warp]
             

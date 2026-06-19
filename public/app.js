@@ -961,7 +961,6 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
                         const srcLocalX = x - disp * ux;
                         const srcLocalY = y - disp * uy;
                         
-                        // Check if the source coordinate lies inside the skin mask using the sharp binary mask
                         const srcXInt = Math.round(srcLocalX);
                         const srcYInt = Math.round(srcLocalY);
                         let isSrcSkin = false;
@@ -969,8 +968,33 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
                             isSrcSkin = binaryMaskData[(srcYInt * w + srcXInt) * 4] > 127;
                         }
                         
-                        if (isSrcSkin) {
-                            bilinearRemap(src, w, h, srcLocalX, srcLocalY, dst, (y * w + x) * 4);
+                        const isDstSkin = binaryMaskData[(y * w + x) * 4] > 127;
+                        
+                        if (isDstSkin || isSrcSkin) {
+                            let finalSrcX = srcLocalX;
+                            let finalSrcY = srcLocalY;
+                            
+                            if (isDstSkin && !isSrcSkin) {
+                                // Clamping binary search along the drag vector to stay within skin bounds
+                                let low = 0;
+                                let high = disp;
+                                for (let i = 0; i < 4; i++) {
+                                    const mid = (low + high) / 2;
+                                    const tx = x - mid * ux;
+                                    const ty = y - mid * uy;
+                                    const txInt = Math.round(tx);
+                                    const tyInt = Math.round(ty);
+                                    if (txInt >= 0 && txInt < w && tyInt >= 0 && tyInt < h && binaryMaskData[(tyInt * w + txInt) * 4] > 127) {
+                                        low = mid;
+                                    } else {
+                                        high = mid;
+                                    }
+                                }
+                                finalSrcX = x - low * ux;
+                                finalSrcY = y - low * uy;
+                            }
+                            
+                            bilinearRemap(src, w, h, finalSrcX, finalSrcY, dst, (y * w + x) * 4);
                         }
                     }
                 }
