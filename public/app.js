@@ -39,7 +39,7 @@ mpCanvas.width = 384;
 mpCanvas.height = 216;
 const mpCtx = mpCanvas.getContext('2d');
 
-// Initialise MediaPipe
+console.log("Initializing MediaPipe Hands...");
 const hands = new Hands({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
 });
@@ -50,6 +50,7 @@ hands.setOptions({
     minTrackingConfidence: 0.6
 });
 
+console.log("Initializing MediaPipe FaceMesh...");
 const faceMesh = new FaceMesh({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
 });
@@ -59,6 +60,7 @@ faceMesh.setOptions({
     minDetectionConfidence: 0.6,
     minTrackingConfidence: 0.6
 });
+console.log("MediaPipe initialized successfully.");
 
 // Callback Handlers
 hands.onResults((results) => {
@@ -986,6 +988,7 @@ function toggleDebug() {
 
 // Start camera capture and media loops
 async function init() {
+    console.log("init() called. Requesting webcam access...");
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
             video: {
@@ -995,8 +998,10 @@ async function init() {
             },
             audio: false
         });
+        console.log("Webcam stream access granted.");
         videoElement.srcObject = stream;
         
+        console.log("Setting up MediaPipe Camera utility...");
         // Start MediaPipe camera utility
         const camera = new Camera(videoElement, {
             onFrame: async () => {
@@ -1010,7 +1015,9 @@ async function init() {
             width: 1280,
             height: 720
         });
+        console.log("Starting Camera stream utility...");
         camera.start();
+        console.log("Camera utility start() called.");
     } catch (err) {
         console.error("Webcam access failed:", err);
         alert("Could not access your webcam. Please check browser camera permissions.");
