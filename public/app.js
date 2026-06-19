@@ -39,52 +39,40 @@ mpCanvas.width = 384;
 mpCanvas.height = 216;
 const mpCtx = mpCanvas.getContext('2d');
 
-// Unified MediaPipe file locator to resolve Emscripten locateFile collision
-function locateMediaPipeFile(file) {
-    if (file.includes("hand")) {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-    }
-    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-}
-
-console.log("Initializing MediaPipe Hands...");
-const hands = new Hands({
-    locateFile: locateMediaPipeFile
+console.log("Initializing MediaPipe Holistic...");
+const holistic = new Holistic({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
 });
-hands.setOptions({
-    maxNumHands: 2,
+holistic.setOptions({
     modelComplexity: 1,
+    smoothLandmarks: true,
     minDetectionConfidence: 0.6,
     minTrackingConfidence: 0.6
 });
-
-console.log("Initializing MediaPipe FaceMesh...");
-const faceMesh = new FaceMesh({
-    locateFile: locateMediaPipeFile
-});
-faceMesh.setOptions({
-    maxNumFaces: 1,
-    refineLandmarks: false,
-    minDetectionConfidence: 0.6,
-    minTrackingConfidence: 0.6
-});
-console.log("MediaPipe initialized successfully.");
+console.log("MediaPipe Holistic initialized successfully.");
 
 // Callback Handlers
-hands.onResults((results) => {
-    latestHands = [];
-    if (results.multiHandLandmarks && results.multiHandedness) {
-        for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-            latestHands.push({
-                landmarks: results.multiHandLandmarks[i],
-                label: results.multiHandedness[i].label
-            });
-        }
+holistic.onResults((results) => {
+    // 1. Populate latestFaces (expects face landmarks inside an array)
+    latestFaces = [];
+    if (results.faceLandmarks) {
+        latestFaces.push(results.faceLandmarks);
     }
-});
-
-faceMesh.onResults((results) => {
-    latestFaces = results.multiFaceLandmarks || [];
+    
+    // 2. Populate latestHands (expects [{ landmarks, label }])
+    latestHands = [];
+    if (results.leftHandLandmarks) {
+        latestHands.push({
+            landmarks: results.leftHandLandmarks,
+            label: 'Left'
+        });
+    }
+    if (results.rightHandLandmarks) {
+        latestHands.push({
+            landmarks: results.rightHandLandmarks,
+            label: 'Right'
+        });
+    }
 });
 
 // Helper Functions
@@ -1023,10 +1011,7 @@ async function init() {
         const camera = new Camera(videoElement, {
             onFrame: async () => {
                 mpCtx.drawImage(videoElement, 0, 0, 384, 216);
-                await Promise.all([
-                    hands.send({ image: mpCanvas }),
-                    faceMesh.send({ image: mpCanvas })
-                ]);
+                await holistic.send({ image: mpCanvas });
                 await updateAndDraw();
             },
             width: 1280,
