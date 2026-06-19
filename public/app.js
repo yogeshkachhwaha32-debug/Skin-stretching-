@@ -41,7 +41,7 @@ const mpCtx = mpCanvas.getContext('2d');
 
 // Unified MediaPipe file locator to resolve Emscripten locateFile collision
 function locateMediaPipeFile(file) {
-    if (file.includes("hands")) {
+    if (file.includes("hand")) {
         return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
     }
     return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
