@@ -998,14 +998,23 @@ function toggleDebug() {
 async function init() {
     console.log("init() called. Requesting webcam access...");
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'user'
-            },
-            audio: false
-        });
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'user'
+                },
+                audio: false
+            });
+        } catch (constraintError) {
+            console.warn("High-res front camera constraints failed, trying generic video stream:", constraintError);
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false
+            });
+        }
         console.log("Webcam stream access granted.");
         videoElement.srcObject = stream;
         
