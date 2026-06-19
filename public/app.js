@@ -822,18 +822,18 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     if (isFace && coords.length >= 264) {
         const eyeDistance = calculateDistance(coords[33], coords[263]);
         const base = eyeDistance === 0 ? 1.0 : eyeDistance;
-        R = Math.round(base * 0.85);
-        R_in = Math.round(base * 0.75);
-        R_out = Math.round(base * 0.2);
+        R = Math.round(base * 1.3);
+        R_in = Math.round(base * 1.0);
+        R_out = Math.round(base * 0.3);
     } else {
         if (coords.length >= 10) {
             const handSize = calculateDistance(coords[0], coords[9]);
             const base = handSize === 0 ? 1.0 : handSize;
-            R = Math.round(base * 0.65);
-            R_in = Math.round(base * 0.55);
-            R_out = Math.round(base * 0.2);
+            R = Math.round(base * 1.0);
+            R_in = Math.round(base * 0.8);
+            R_out = Math.round(base * 0.3);
         } else {
-            R = 60; R_in = 50; R_out = 15;
+            R = 100; R_in = 80; R_out = 30;
         }
     }
     
@@ -895,7 +895,7 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
         }
     }
 
-    // 1. Draw the binary mask (sharp edges, no filter) to precisely check skin pixels
+    // Draw the binary mask (sharp edges, no filter) to precisely check skin pixels
     maskCanvas.width = w;
     maskCanvas.height = h;
     maskCtx.filter = 'none';
@@ -905,16 +905,6 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     maskCtx.strokeStyle = '#fff';
     drawSkinPath(maskCtx, xMin, yMin);
     const binaryMaskData = maskCtx.getImageData(0, 0, w, h).data;
-    
-    // 2. Draw the blurred mask for feathering the displacement factor
-    maskCtx.fillStyle = '#000';
-    maskCtx.fillRect(0, 0, w, h);
-    const blurSize = Math.max(3, Math.round(R * 0.15));
-    maskCtx.filter = `blur(${blurSize}px)`;
-    maskCtx.fillStyle = '#fff';
-    maskCtx.strokeStyle = '#fff';
-    drawSkinPath(maskCtx, xMin, yMin);
-    const maskData = maskCtx.getImageData(0, 0, w, h).data;
     
     const imgData = ctx.getImageData(xMin, yMin, w, h);
     const src = imgData.data;
@@ -940,62 +930,57 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
             const dPerpSq = d2 - t * t;
             
             if (dPerpSq < RSq) {
-                const maskVal = maskData[(y * w + x) * 4] / 255.0;
-                if (maskVal > 0.01) {
-                    const diff = 1.0 - dPerpSq / RSq;
-                    const g = diff * diff;
-                    const strength = 0.98;
-                    const k = g * strength;
+                const diff = 1.0 - dPerpSq / RSq;
+                const g = diff * diff;
+                const strength = 0.98;
+                const k = g * strength;
+                
+                let disp = 0;
+                if (t >= -R_in && t <= dist) {
+                    disp = k * (t + R_in) * (dist / (R_in + dist));
+                } else if (t > dist && t < dist + R_out) {
+                    const diff2 = 1.0 - (t - dist) / R_out;
+                    disp = dist * k * diff2 * diff2;
+                }
+                
+                if (disp !== 0) {
+                    const srcLocalX = x - disp * ux;
+                    const srcLocalY = y - disp * uy;
                     
-                    let disp = 0;
-                    if (t >= -R_in && t <= dist) {
-                        disp = k * (t + R_in) * (dist / (R_in + dist));
-                    } else if (t > dist && t < dist + R_out) {
-                        const diff2 = 1.0 - (t - dist) / R_out;
-                        disp = dist * k * diff2 * diff2;
+                    const srcXInt = Math.round(srcLocalX);
+                    const srcYInt = Math.round(srcLocalY);
+                    let isSrcSkin = false;
+                    if (srcXInt >= 0 && srcXInt < w && srcYInt >= 0 && srcYInt < h) {
+                        isSrcSkin = binaryMaskData[(srcYInt * w + srcXInt) * 4] > 127;
                     }
                     
-                    disp *= maskVal;
+                    const isDstSkin = binaryMaskData[(y * w + x) * 4] > 127;
                     
-                    if (disp !== 0) {
-                        const srcLocalX = x - disp * ux;
-                        const srcLocalY = y - disp * uy;
+                    if (isDstSkin || isSrcSkin) {
+                        let finalSrcX = srcLocalX;
+                        let finalSrcY = srcLocalY;
                         
-                        const srcXInt = Math.round(srcLocalX);
-                        const srcYInt = Math.round(srcLocalY);
-                        let isSrcSkin = false;
-                        if (srcXInt >= 0 && srcXInt < w && srcYInt >= 0 && srcYInt < h) {
-                            isSrcSkin = binaryMaskData[(srcYInt * w + srcXInt) * 4] > 127;
-                        }
-                        
-                        const isDstSkin = binaryMaskData[(y * w + x) * 4] > 127;
-                        
-                        if (isDstSkin || isSrcSkin) {
-                            let finalSrcX = srcLocalX;
-                            let finalSrcY = srcLocalY;
-                            
-                            if (isDstSkin && !isSrcSkin) {
-                                // Clamping binary search along the drag vector to stay within skin bounds
-                                let low = 0;
-                                let high = disp;
-                                for (let i = 0; i < 4; i++) {
-                                    const mid = (low + high) / 2;
-                                    const tx = x - mid * ux;
-                                    const ty = y - mid * uy;
-                                    const txInt = Math.round(tx);
-                                    const tyInt = Math.round(ty);
-                                    if (txInt >= 0 && txInt < w && tyInt >= 0 && tyInt < h && binaryMaskData[(tyInt * w + txInt) * 4] > 127) {
-                                        low = mid;
-                                    } else {
-                                        high = mid;
-                                    }
+                        if (isDstSkin && !isSrcSkin) {
+                            // Clamping binary search along the drag vector to stay within skin bounds
+                            let low = 0;
+                            let high = disp;
+                            for (let i = 0; i < 4; i++) {
+                                const mid = (low + high) / 2;
+                                const tx = x - mid * ux;
+                                const ty = y - mid * uy;
+                                const txInt = Math.round(tx);
+                                const tyInt = Math.round(ty);
+                                if (txInt >= 0 && txInt < w && tyInt >= 0 && tyInt < h && binaryMaskData[(tyInt * w + txInt) * 4] > 127) {
+                                    low = mid;
+                                } else {
+                                    high = mid;
                                 }
-                                finalSrcX = x - low * ux;
-                                finalSrcY = y - low * uy;
                             }
-                            
-                            bilinearRemap(src, w, h, finalSrcX, finalSrcY, dst, (y * w + x) * 4);
+                            finalSrcX = x - low * ux;
+                            finalSrcY = y - low * uy;
                         }
+                        
+                        bilinearRemap(src, w, h, finalSrcX, finalSrcY, dst, (y * w + x) * 4);
                     }
                 }
             }

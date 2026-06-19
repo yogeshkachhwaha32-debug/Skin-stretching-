@@ -42,10 +42,10 @@ class WarpEngine:
             eye_distance = calculate_distance(p_eye_left, p_eye_right)
             if eye_distance == 0:
                 eye_distance = 1.0
-            # Localized corridor radius and soft falloff transitions
-            R = int(eye_distance * 0.85)     # Corridor half-width
-            R_in = int(eye_distance * 0.75)  # Falloff behind the anchor
-            R_out = int(eye_distance * 0.2)   # Falloff beyond the pinch point
+            # Localized corridor radius and soft falloff transitions (increased for dramatic elastic stretch)
+            R = int(eye_distance * 1.3)     # Corridor half-width
+            R_in = int(eye_distance * 1.0)  # Falloff behind the anchor
+            R_out = int(eye_distance * 0.3)   # Falloff beyond the pinch point
         else:
             # Hand
             if len(coords) >= 10:
@@ -54,13 +54,13 @@ class WarpEngine:
                 hand_size = calculate_distance(wrist, middle_mcp)
                 if hand_size == 0:
                     hand_size = 1.0
-                R = int(hand_size * 0.65)
-                R_in = int(hand_size * 0.55)
-                R_out = int(hand_size * 0.2)
+                R = int(hand_size * 1.0)
+                R_in = int(hand_size * 0.8)
+                R_out = int(hand_size * 0.3)
             else:
-                R = 60
-                R_in = 50
-                R_out = 15
+                R = 100
+                R_in = 80
+                R_out = 30
                 
         h, w, _ = frame.shape
         margin_x = max(R, R_in) + 10
