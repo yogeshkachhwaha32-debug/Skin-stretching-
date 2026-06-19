@@ -39,9 +39,17 @@ mpCanvas.width = 384;
 mpCanvas.height = 216;
 const mpCtx = mpCanvas.getContext('2d');
 
+// Unified MediaPipe file locator to resolve Emscripten locateFile collision
+function locateMediaPipeFile(file) {
+    if (file.includes("hands")) {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }
+    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+}
+
 console.log("Initializing MediaPipe Hands...");
 const hands = new Hands({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    locateFile: locateMediaPipeFile
 });
 hands.setOptions({
     maxNumHands: 2,
@@ -52,7 +60,7 @@ hands.setOptions({
 
 console.log("Initializing MediaPipe FaceMesh...");
 const faceMesh = new FaceMesh({
-    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    locateFile: locateMediaPipeFile
 });
 faceMesh.setOptions({
     maxNumFaces: 1,
