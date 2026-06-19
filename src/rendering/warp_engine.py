@@ -97,6 +97,27 @@ class WarpEngine:
         map_x = grid_x.copy()
         map_y = grid_y.copy()
         
+        # Create a sharp binary skin mask for the ROI (White = Skin, Black = Background)
+        binary_mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+        if is_face and len(coords) >= 264:
+            face_outline = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
+            pts = np.array([[int(coords[idx][0] - x_min), int(coords[idx][1] - y_min)] for idx in face_outline if idx < len(coords)], dtype=np.int32)
+            cv2.fillPoly(binary_mask, [pts], 255)
+        else:
+            # Hand
+            chains = [
+                [0, 1, 2, 3, 4],
+                [0, 5, 6, 7, 8],
+                [5, 9, 13, 17],
+                [0, 17, 18, 19, 20]
+            ]
+            for chain in chains:
+                pts = np.array([[int(coords[idx][0] - x_min), int(coords[idx][1] - y_min)] for idx in chain if idx < len(coords)], dtype=np.int32)
+                cv2.polylines(binary_mask, [pts], False, 255, thickness=int(R * 0.8))
+            for pt in coords:
+                cx_c, cy_c = int(pt[0] - x_min), int(pt[1] - y_min)
+                cv2.circle(binary_mask, (cx_c, cy_c), int(R * 0.4), 255, -1)
+        
         # Falloff calculation perpendicular to the drag line using squared distance
         R_sq = float(R * R)
         mask_influence = d_perp_sq < R_sq
@@ -122,9 +143,26 @@ class WarpEngine:
                 tb = t_sel[mask_beyond]
                 disp[mask_beyond] = dist * k[mask_beyond] * ((1.0 - (tb - dist) / R_out) ** 2)
                 
-            # Shift pixels backwards along the drag direction
-            map_x[mask_influence] -= (disp * ux).astype(np.float32)
-            map_y[mask_influence] -= (disp * uy).astype(np.float32)
+            # Compute candidate coordinates for shifted pixels
+            shift_x = np.zeros_like(map_x)
+            shift_y = np.zeros_like(map_y)
+            shift_x[mask_influence] = (disp * ux).astype(np.float32)
+            shift_y[mask_influence] = (disp * uy).astype(np.float32)
+            
+            cand_map_x = map_x - shift_x
+            cand_map_y = map_y - shift_y
+            
+            # Round and clamp candidate coordinates to index the binary skin mask
+            src_x = np.clip(np.round(cand_map_x), 0, roi_w - 1).astype(np.int32)
+            src_y = np.clip(np.round(cand_map_y), 0, roi_h - 1).astype(np.int32)
+            
+            # Only apply displacement if candidate source pixel is classified as skin
+            is_src_skin = binary_mask[src_y, src_x] > 127
+            
+            # Update warp mapping strictly for skin-to-skin transitions
+            valid_warp = mask_influence & is_src_skin
+            map_x[valid_warp] = cand_map_x[valid_warp]
+            map_y[valid_warp] = cand_map_y[valid_warp]
             
         # Perform remapping
         warped_roi = cv2.remap(roi, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)

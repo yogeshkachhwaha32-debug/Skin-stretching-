@@ -39,6 +39,10 @@ mpCanvas.width = 384;
 mpCanvas.height = 216;
 const mpCtx = mpCanvas.getContext('2d');
 
+// Offscreen canvas for skin-only warp mask
+const maskCanvas = document.createElement('canvas');
+const maskCtx = maskCanvas.getContext('2d');
+
 console.log("Initializing MediaPipe Holistic...");
 const holistic = new Holistic({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
@@ -847,6 +851,71 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     
     if (w <= 10 || h <= 10) return;
     
+    // Helper to draw the skin paths
+    function drawSkinPath(maskContext, xOffset, yOffset) {
+        if (isFace && coords.length >= 264) {
+            const faceOutline = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+            maskContext.beginPath();
+            const startPt = coords[faceOutline[0]];
+            maskContext.moveTo(startPt.x - xOffset, startPt.y - yOffset);
+            for (let i = 1; i < faceOutline.length; i++) {
+                const pt = coords[faceOutline[i]];
+                if (pt) {
+                    maskContext.lineTo(pt.x - xOffset, pt.y - yOffset);
+                }
+            }
+            maskContext.closePath();
+            maskContext.fill();
+        } else {
+            // Hand
+            maskContext.lineWidth = Math.round(R * 0.8);
+            maskContext.lineCap = 'round';
+            maskContext.lineJoin = 'round';
+            const chains = [
+                [0, 1, 2, 3, 4],
+                [0, 5, 6, 7, 8],
+                [5, 9, 13, 17],
+                [0, 17, 18, 19, 20]
+            ];
+            chains.forEach(chain => {
+                maskContext.beginPath();
+                const startPt = coords[chain[0]];
+                maskContext.moveTo(startPt.x - xOffset, startPt.y - yOffset);
+                for (let i = 1; i < chain.length; i++) {
+                    const pt = coords[chain[i]];
+                    maskContext.lineTo(pt.x - xOffset, pt.y - yOffset);
+                }
+                maskContext.stroke();
+            });
+            coords.forEach(pt => {
+                maskContext.beginPath();
+                maskContext.arc(pt.x - xOffset, pt.y - yOffset, R * 0.4, 0, 2 * Math.PI);
+                maskContext.fill();
+            });
+        }
+    }
+
+    // 1. Draw the binary mask (sharp edges, no filter) to precisely check skin pixels
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    maskCtx.filter = 'none';
+    maskCtx.fillStyle = '#000';
+    maskCtx.fillRect(0, 0, w, h);
+    maskCtx.fillStyle = '#fff';
+    maskCtx.strokeStyle = '#fff';
+    drawSkinPath(maskCtx, xMin, yMin);
+    const binaryMaskData = maskCtx.getImageData(0, 0, w, h).data;
+    
+    // 2. Draw the blurred mask for feathering the displacement factor
+    maskCtx.fillStyle = '#000';
+    maskCtx.fillRect(0, 0, w, h);
+    const blurSize = Math.max(3, Math.round(R * 0.15));
+    maskCtx.filter = `blur(${blurSize}px)`;
+    maskCtx.fillStyle = '#fff';
+    maskCtx.strokeStyle = '#fff';
+    drawSkinPath(maskCtx, xMin, yMin);
+    const maskData = maskCtx.getImageData(0, 0, w, h).data;
+    
     const imgData = ctx.getImageData(xMin, yMin, w, h);
     const src = imgData.data;
     const dstData = ctx.createImageData(w, h);
@@ -871,24 +940,39 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
             const dPerpSq = d2 - t * t;
             
             if (dPerpSq < RSq) {
-                const diff = 1.0 - dPerpSq / RSq;
-                const g = diff * diff;
-                const strength = 0.98;
-                const k = g * strength;
-                
-                let disp = 0;
-                if (t >= -R_in && t <= dist) {
-                    disp = k * (t + R_in) * (dist / (R_in + dist));
-                } else if (t > dist && t < dist + R_out) {
-                    const diff2 = 1.0 - (t - dist) / R_out;
-                    disp = dist * k * diff2 * diff2;
-                }
-                
-                if (disp !== 0) {
-                    const srcLocalX = x - disp * ux;
-                    const srcLocalY = y - disp * uy;
+                const maskVal = maskData[(y * w + x) * 4] / 255.0;
+                if (maskVal > 0.01) {
+                    const diff = 1.0 - dPerpSq / RSq;
+                    const g = diff * diff;
+                    const strength = 0.98;
+                    const k = g * strength;
                     
-                    bilinearRemap(src, w, h, srcLocalX, srcLocalY, dst, (y * w + x) * 4);
+                    let disp = 0;
+                    if (t >= -R_in && t <= dist) {
+                        disp = k * (t + R_in) * (dist / (R_in + dist));
+                    } else if (t > dist && t < dist + R_out) {
+                        const diff2 = 1.0 - (t - dist) / R_out;
+                        disp = dist * k * diff2 * diff2;
+                    }
+                    
+                    disp *= maskVal;
+                    
+                    if (disp !== 0) {
+                        const srcLocalX = x - disp * ux;
+                        const srcLocalY = y - disp * uy;
+                        
+                        // Check if the source coordinate lies inside the skin mask using the sharp binary mask
+                        const srcXInt = Math.round(srcLocalX);
+                        const srcYInt = Math.round(srcLocalY);
+                        let isSrcSkin = false;
+                        if (srcXInt >= 0 && srcXInt < w && srcYInt >= 0 && srcYInt < h) {
+                            isSrcSkin = binaryMaskData[(srcYInt * w + srcXInt) * 4] > 127;
+                        }
+                        
+                        if (isSrcSkin) {
+                            bilinearRemap(src, w, h, srcLocalX, srcLocalY, dst, (y * w + x) * 4);
+                        }
+                    }
                 }
             }
             wx++;
@@ -982,12 +1066,35 @@ function toggleDebug() {
     }
 }
 
+let isLoopRunning = false;
+async function processVideoFrame() {
+    if (videoElement.paused || videoElement.ended) {
+        requestAnimationFrame(processVideoFrame);
+        return;
+    }
+    try {
+        mpCtx.drawImage(videoElement, 0, 0, 384, 216);
+        await holistic.send({ image: mpCanvas });
+        await updateAndDraw();
+    } catch (err) {
+        console.error("Frame processing error:", err);
+    }
+    requestAnimationFrame(processVideoFrame);
+}
+
 // Start camera capture and media loops
 async function init() {
     console.log("init() called. Requesting webcam access...");
     try {
         let stream;
+        // Prioritize simple video constraints for instant camera startup
         try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: true,
+                audio: false
+            });
+        } catch (genericError) {
+            console.warn("Generic camera request failed, trying with HD constraints:", genericError);
             stream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     width: { ideal: 1280 },
@@ -996,30 +1103,25 @@ async function init() {
                 },
                 audio: false
             });
-        } catch (constraintError) {
-            console.warn("High-res front camera constraints failed, trying generic video stream:", constraintError);
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: false
-            });
         }
         console.log("Webcam stream access granted.");
         videoElement.srcObject = stream;
         
-        console.log("Setting up MediaPipe Camera utility...");
-        // Start MediaPipe camera utility
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                mpCtx.drawImage(videoElement, 0, 0, 384, 216);
-                await holistic.send({ image: mpCanvas });
-                await updateAndDraw();
-            },
-            width: 1280,
-            height: 720
-        });
-        console.log("Starting Camera stream utility...");
-        camera.start();
-        console.log("Camera utility start() called.");
+        if (videoElement.readyState >= 2) {
+            videoElement.play();
+            if (!isLoopRunning) {
+                isLoopRunning = true;
+                requestAnimationFrame(processVideoFrame);
+            }
+        } else {
+            videoElement.addEventListener('loadedmetadata', () => {
+                videoElement.play();
+                if (!isLoopRunning) {
+                    isLoopRunning = true;
+                    requestAnimationFrame(processVideoFrame);
+                }
+            });
+        }
     } catch (err) {
         console.error("Webcam access failed:", err);
         alert("Could not access your webcam. Please check browser camera permissions.");
