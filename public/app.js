@@ -512,7 +512,11 @@ function updateAndDraw() {
                     }
                 }
                 
-                if (minDist < 180 && bestLmIdx !== -1) {
+                const wrist = hand.landmarks[0];
+                const middleMcp = hand.landmarks[9];
+                const pinchingHandSize = calculateDistance(wrist, middleMcp);
+                
+                if (minDist < 80 && bestLmIdx !== -1) {
                     let initAnchor = null;
                     if (bestType === 'face') {
                         initAnchor = trackedFaces.get(bestId)[bestLmIdx];
@@ -527,7 +531,21 @@ function updateAndDraw() {
                         initialPinchPos: currentPinchPos,
                         initialAnchorPos: initAnchor,
                         initialDist: minDist,
-                        lastPinchPos: currentPinchPos
+                        lastPinchPos: currentPinchPos,
+                        handSize: pinchingHandSize
+                    };
+                    activeLocks.set(handId, lock);
+                } else {
+                    // Fallback to freeform lock (e.g. hair, ear, finger, clothing, background)
+                    lock = {
+                        anchorType: 'freeform',
+                        anchorId: null,
+                        landmarkIdx: 0,
+                        initialPinchPos: currentPinchPos,
+                        initialAnchorPos: currentPinchPos,
+                        initialDist: 0,
+                        lastPinchPos: currentPinchPos,
+                        handSize: pinchingHandSize
                     };
                     activeLocks.set(handId, lock);
                 }
@@ -551,7 +569,7 @@ function updateAndDraw() {
                         const eyeDist = calculateDistance(pEyeLeft, pEyeRight);
                         nominalLen = (eyeDist > 0 ? eyeDist : 80.0) * 0.15;
                     }
-                } else {
+                } else if (lock.anchorType === 'hand') {
                     if (trackedHands.has(lock.anchorId)) {
                         targetCoords = trackedHands.get(lock.anchorId).landmarks;
                         anchorPos = targetCoords[lock.landmarkIdx];
@@ -561,6 +579,11 @@ function updateAndDraw() {
                         const middleMcp = targetCoords[9];
                         nominalLen = calculateDistance(wrist, middleMcp) * 0.25;
                     }
+                } else if (lock.anchorType === 'freeform') {
+                    targetCoords = [lock.initialAnchorPos];
+                    anchorPos = lock.initialAnchorPos;
+                    targetExists = true;
+                    nominalLen = (lock.handSize > 0 ? lock.handSize : 80.0) * 0.25;
                 }
                 
                 if (targetExists && anchorPos) {
@@ -593,7 +616,8 @@ function updateAndDraw() {
                         nominalLen: normLen,
                         dragVector: { x: dragDx, y: dragDy },
                         dragDist,
-                        initialPinchPos: initP
+                        initialPinchPos: initP,
+                        handSize: lock.handSize
                     });
                 } else {
                     activeLocks.delete(handId);
@@ -634,6 +658,8 @@ function updateAndDraw() {
             s.lastDragVector = { x: 1.0, y: 0.0 };
         }
         s.lastNominalLen = active.nominalLen;
+        s.initialAnchorPos = active.anchorPos;
+        s.handSize = active.handSize;
     });
     
     const stretchesToDelete = [];
@@ -665,11 +691,14 @@ function updateAndDraw() {
             if (trackedFaces.has(s.anchorId)) {
                 coords = trackedFaces.get(s.anchorId);
             }
-        } else {
+        } else if (s.anchorType === 'hand') {
             if (trackedHands.has(s.anchorId)) {
                 coords = trackedHands.get(s.anchorId).landmarks;
                 isFace = false;
             }
+        } else if (s.anchorType === 'freeform') {
+            coords = [s.initialAnchorPos];
+            isFace = 'freeform';
         }
         
         const anchorIdx = s.landmarkIdx;
@@ -681,7 +710,7 @@ function updateAndDraw() {
                 y: Math.round(anchorPos.y + s.lastDragVector.y * warpDist)
             };
             
-            warpImageDirectional(coords, anchorIdx, warpPinchPos, isFace);
+            warpImageDirectional(coords, anchorIdx, warpPinchPos, isFace, s.handSize);
         }
     }
     
@@ -835,7 +864,7 @@ function bilinearRemap(src, w, h, x, y, dst, dstIdx) {
 }
 
 // ─── Directional Warp Algorithm (IMPROVED — no tearing) ───
-function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
+function warpImageDirectional(coords, anchorIdx, pinchPos, isFace, handSize) {
     const anchorPos = coords[anchorIdx];
     const ax = anchorPos.x;
     const ay = anchorPos.y;
@@ -852,22 +881,27 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     const uy = dy / dist;
     
     let R, R_in, R_out;
-    if (isFace && coords.length >= 264) {
+    if (isFace === true && coords.length >= 264) {
         const eyeDistance = calculateDistance(coords[33], coords[263]);
         const base = eyeDistance === 0 ? 1.0 : eyeDistance;
         R = Math.round(base * 1.4);
         R_in = Math.round(base * 1.1);
         R_out = Math.round(base * 0.4);
-    } else {
+    } else if (isFace === false) {
         if (coords.length >= 10) {
-            const handSize = calculateDistance(coords[0], coords[9]);
-            const base = handSize === 0 ? 1.0 : handSize;
+            const handSizeVal = calculateDistance(coords[0], coords[9]);
+            const base = handSizeVal === 0 ? 1.0 : handSizeVal;
             R = Math.round(base * 1.1);
             R_in = Math.round(base * 0.9);
             R_out = Math.round(base * 0.35);
         } else {
             R = 100; R_in = 80; R_out = 30;
         }
+    } else if (isFace === 'freeform') {
+        const base = handSize || 80.0;
+        R = Math.round(base * 1.4);
+        R_in = Math.round(base * 1.1);
+        R_out = Math.round(base * 0.4);
     }
     
     const canvasW = canvasElement.width;
@@ -886,7 +920,7 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     
     // Helper to draw the skin paths
     function drawSkinPath(maskContext, xOffset, yOffset) {
-        if (isFace && coords.length >= 264) {
+        if (isFace === true && coords.length >= 264) {
             const faceOutline = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
             maskContext.beginPath();
             const startPt = coords[faceOutline[0]];
@@ -899,7 +933,7 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
             }
             maskContext.closePath();
             maskContext.fill();
-        } else {
+        } else if (isFace === false) {
             maskContext.lineWidth = Math.round(R * 0.8);
             maskContext.lineCap = 'round';
             maskContext.lineJoin = 'round';
@@ -924,6 +958,14 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
                 maskContext.arc(pt.x - xOffset, pt.y - yOffset, R * 0.4, 0, 2 * Math.PI);
                 maskContext.fill();
             });
+        } else if (isFace === 'freeform') {
+            maskContext.beginPath();
+            maskContext.moveTo(ax - xOffset, ay - yOffset);
+            maskContext.lineTo(px - xOffset, py - yOffset);
+            maskContext.lineWidth = R * 2;
+            maskContext.lineCap = 'round';
+            maskContext.strokeStyle = '#fff';
+            maskContext.stroke();
         }
     }
 
