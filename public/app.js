@@ -1,47 +1,59 @@
-// public/app.js
+// public/app.js — Skin Stretching Simulation (Optimized & Tear-Free)
 
-// Landmark Indices
+// ─── Landmark Indices ───
 const EYE_LEFT_OUTER = 33;
 const EYE_RIGHT_OUTER = 263;
 
-// Global State
+// ─── Global State ───
 let showDebug = false;
 let latestHands = [];
 let latestFaces = [];
-let activeLocks = new Map(); // handId -> Lock object
-let luffyStretches = new Map(); // handId -> Spring object
-let faceMouthTrackers = new Map(); // faceId -> MouthTracker object
+let activeLocks = new Map();
+let luffyStretches = new Map();
+let faceMouthTrackers = new Map();
 let lastSpringTime = performance.now() / 1000.0;
 let frameCounter = 0;
 let lastFpsTime = performance.now();
 let browserFps = 0.0;
 
 // Persistent Entity ID Trackers
-let prevHandCenters = new Map(); // handId -> {x, y}
+let prevHandCenters = new Map();
 let nextHandId = 0;
-let prevFaceCenters = new Map(); // faceId -> {x, y}
+let prevFaceCenters = new Map();
 let nextFaceId = 0;
-let pinchInactiveFrames = new Map(); // handId -> count
+let pinchInactiveFrames = new Map();
 
 // Smoothers cache
-let faceSmoothers = new Map(); // faceId -> PointListSmoother
-let handSmoothers = new Map(); // handId -> PointListSmoother
+let faceSmoothers = new Map();
+let handSmoothers = new Map();
 
-// Grab elements
+// ─── DOM Elements ───
 const videoElement = document.getElementById('webcam');
 const canvasElement = document.getElementById('output-canvas');
-const ctx = canvasElement.getContext('2d', { willReadFrequently: true });
+const ctx = canvasElement.getContext('2d', { willReadFrequently: false });
 const loadingBanner = document.getElementById('loading-banner');
 
 // Offscreen canvas for downscaled MediaPipe inference input
 const mpCanvas = document.createElement('canvas');
-mpCanvas.width = 384;
-mpCanvas.height = 216;
+mpCanvas.width = 320;
+mpCanvas.height = 180;
 const mpCtx = mpCanvas.getContext('2d');
 
-// Offscreen canvas for skin-only warp mask
+// Reusable offscreen canvas for skin-only warp mask
 const maskCanvas = document.createElement('canvas');
 const maskCtx = maskCanvas.getContext('2d');
+
+// Pre-allocated reusable canvases for mouth warp (avoid per-frame allocation)
+const _mouthCropCanvas = document.createElement('canvas');
+const _mouthCropCtx = _mouthCropCanvas.getContext('2d');
+const _mouthStretchCanvas = document.createElement('canvas');
+const _mouthStretchCtx = _mouthStretchCanvas.getContext('2d');
+const _mouthMaskCanvas = document.createElement('canvas');
+const _mouthMaskCtx = _mouthMaskCanvas.getContext('2d');
+
+// ─── Async MediaPipe Pipeline ───
+let mpBusy = false;
+let mpFrameQueued = false;
 
 console.log("Initializing MediaPipe Holistic...");
 const holistic = new Holistic({
@@ -77,16 +89,37 @@ holistic.onResults((results) => {
             label: 'Right'
         });
     }
+    
+    mpBusy = false;
+    // If a frame was queued while we were processing, send it now
+    if (mpFrameQueued) {
+        mpFrameQueued = false;
+        sendFrameToMediaPipe();
+    }
 });
 
-// Helper Functions
+function sendFrameToMediaPipe() {
+    if (mpBusy) {
+        mpFrameQueued = true;
+        return;
+    }
+    if (videoElement.paused || videoElement.ended || videoElement.readyState < 2) return;
+    mpBusy = true;
+    mpCtx.drawImage(videoElement, 0, 0, mpCanvas.width, mpCanvas.height);
+    holistic.send({ image: mpCanvas }).catch(err => {
+        console.error("MediaPipe send error:", err);
+        mpBusy = false;
+    });
+}
+
+// ─── Helper Functions ───
 function calculateDistance(p1, p2) {
     const dx = p1.x - p2.x;
     const dy = p1.y - p2.y;
     return Math.sqrt(dx * dx + dy * dy);
 }
 
-// EMA Smoothing Filter
+// ─── EMA Smoothing Filter ───
 class EMASmoother {
     constructor(alpha = 0.3) {
         this.alpha = alpha;
@@ -98,7 +131,10 @@ class EMASmoother {
             this.value = Array.isArray(nextValue) ? [...nextValue] : nextValue;
         } else {
             if (Array.isArray(nextValue)) {
-                this.value = nextValue.map((n, idx) => this.alpha * n + (1.0 - this.alpha) * this.value[idx]);
+                const a = this.alpha, b = 1.0 - a;
+                for (let i = 0; i < nextValue.length; i++) {
+                    this.value[i] = a * nextValue[i] + b * this.value[i];
+                }
             } else {
                 this.value = this.alpha * nextValue + (1.0 - this.alpha) * this.value;
             }
@@ -133,7 +169,7 @@ class PointListSmoother {
     }
 }
 
-// 1D Damped Spring-Mass Physics System
+// ─── 1D Damped Spring-Mass Physics System ───
 class Spring1D {
     constructor(restPos = 0.0, stiffness = 0.20, damping = 0.12, mass = 1.0) {
         this.restPos = restPos;
@@ -157,7 +193,7 @@ class Spring1D {
     }
 }
 
-// Mouth Metrics Engine
+// ─── Mouth Metrics Engine ───
 class MouthTracker {
     constructor() {
         this.calibrationFrames = 0;
@@ -202,8 +238,8 @@ class MouthTracker {
         }
         
         const stretchRatio = normalizedWidth / this.restNormalizedWidth;
-        const isStretching = stretchRatio >= 1.35; // MOUTH_STRETCH_THRESHOLD
-        const isOpen = height >= 25; // MOUTH_OPEN_THRESHOLD
+        const isStretching = stretchRatio >= 1.35;
+        const isOpen = height >= 25;
         
         return {
             width,
@@ -220,12 +256,11 @@ class MouthTracker {
     }
 }
 
-// Track entities frame-to-frame to assign persistent IDs
+// ─── Track entities frame-to-frame to assign persistent IDs ───
 function trackEntities(handsList, facesList, w, h) {
     const trackedHands = new Map();
     const newHandCenters = new Map();
     
-    // 1. Track Hands
     handsList.forEach(hand => {
         const landmarks = getPixelCoords(hand.landmarks, w, h);
         const wrist = landmarks[0];
@@ -255,7 +290,6 @@ function trackEntities(handsList, facesList, w, h) {
     });
     prevHandCenters = newHandCenters;
     
-    // 2. Track Faces
     const trackedFaces = new Map();
     const newFaceCenters = new Map();
     
@@ -298,7 +332,7 @@ function getPixelCoords(landmarks, width, height) {
     }));
 }
 
-// Hysteresis pinch check
+// ─── Hysteresis pinch check ───
 function detectPinch(hand, handId) {
     const landmarks = hand.landmarks;
     const thumbTip = landmarks[4];
@@ -315,8 +349,24 @@ function detectPinch(hand, handId) {
     return normalizedPinch < threshold;
 }
 
-// Main Frame Processing Loop
-async function updateAndDraw() {
+// ─── Canvas Resize Handler ───
+function resizeCanvas() {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Use a lower internal resolution for better performance while CSS scales it up
+    const scale = Math.min(1, 1280 / vw);
+    const cw = Math.round(vw * scale);
+    const ch = Math.round(vh * scale);
+    if (canvasElement.width !== cw || canvasElement.height !== ch) {
+        canvasElement.width = cw;
+        canvasElement.height = ch;
+    }
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+// ─── Main Frame Processing Loop ───
+function updateAndDraw() {
     frameCounter++;
     const now = performance.now();
     if (now - lastFpsTime >= 1000) {
@@ -332,7 +382,7 @@ async function updateAndDraw() {
     const w = canvasElement.width;
     const h = canvasElement.height;
     
-    // Draw original webcam frame unmirrored (CSS mirrors the canvas)
+    // Draw original webcam frame
     ctx.drawImage(videoElement, 0, 0, w, h);
     
     // Track faces and hands with persistent ID classification mapping
@@ -340,7 +390,10 @@ async function updateAndDraw() {
     
     // Hide loading banner on first successful frame
     if (trackedHands.size > 0 || trackedFaces.size > 0) {
-        loadingBanner.style.opacity = 0;
+        if (loadingBanner.style.display !== 'none') {
+            loadingBanner.style.opacity = '0';
+            setTimeout(() => { loadingBanner.style.display = 'none'; }, 500);
+        }
     }
     
     // 1. Smooth Face Landmarks
@@ -353,11 +406,8 @@ async function updateAndDraw() {
     }
     trackedFaces = smoothedFaces;
     
-    // Clean up unused face smoothers
     for (let fid of faceSmoothers.keys()) {
-        if (!trackedFaces.has(fid)) {
-            faceSmoothers.delete(fid);
-        }
+        if (!trackedFaces.has(fid)) faceSmoothers.delete(fid);
     }
     
     // 2. Smooth Hand Landmarks
@@ -374,11 +424,8 @@ async function updateAndDraw() {
     }
     trackedHands = smoothedHands;
     
-    // Clean up unused hand smoothers
     for (let hid of handSmoothers.keys()) {
-        if (!trackedHands.has(hid)) {
-            handSmoothers.delete(hid);
-        }
+        if (!trackedHands.has(hid)) handSmoothers.delete(hid);
     }
     
     // Debounce hand tracking loss for locks
@@ -433,16 +480,14 @@ async function updateAndDraw() {
             let lock = activeLocks.get(handId);
             
             if (!lock && hand) {
-                // Search for closest landmark among all faces and other hands
                 let bestType = null;
                 let bestId = null;
                 let bestLmIdx = -1;
                 let minDist = Infinity;
                 
-                // Search faces
                 for (let [fid, coords] of trackedFaces) {
-                    coords.forEach((pt, idx) => {
-                        if (idx >= 468) return;
+                    for (let idx = 0; idx < Math.min(coords.length, 468); idx++) {
+                        const pt = coords[idx];
                         const d = calculateDistance(currentPinchPos, pt);
                         if (d < minDist) {
                             minDist = d;
@@ -450,13 +495,13 @@ async function updateAndDraw() {
                             bestId = fid;
                             bestLmIdx = idx;
                         }
-                    });
+                    }
                 }
                 
-                // Search other hands (finger stretching) - skip self
                 for (let [hid, handInfo] of trackedHands) {
                     if (hid === handId) continue;
-                    handInfo.landmarks.forEach((pt, idx) => {
+                    for (let idx = 0; idx < handInfo.landmarks.length; idx++) {
+                        const pt = handInfo.landmarks[idx];
                         const d = calculateDistance(currentPinchPos, pt);
                         if (d < minDist) {
                             minDist = d;
@@ -464,7 +509,7 @@ async function updateAndDraw() {
                             bestId = hid;
                             bestLmIdx = idx;
                         }
-                    });
+                    }
                 }
                 
                 if (minDist < 180 && bestLmIdx !== -1) {
@@ -559,23 +604,21 @@ async function updateAndDraw() {
         }
     }
     
-    // Physics Updates (Mass-Damping-Stiffness)
+    // ─── Physics Updates (Mass-Damping-Stiffness) ───
     const currentTime = performance.now() / 1000.0;
     const dt = currentTime - lastSpringTime;
     lastSpringTime = currentTime;
     const timeStep = Math.max(0.1, Math.min(dt * 60.0, 3.0));
     
-    // Reset activity check flags
     for (let s of luffyStretches.values()) {
         s.isActive = false;
     }
     
-    // Apply updates for new/active stretches
     activeStretches.forEach(active => {
         const hid = active.handId;
         if (!luffyStretches.has(hid)) {
             luffyStretches.set(hid, {
-                springDist: new Spring1D(0.0, 0.18, 0.22) // stiffness 0.18, damping 0.22 for more accurate tracking
+                springDist: new Spring1D(0.0, 0.18, 0.22)
             });
         }
         const s = luffyStretches.get(hid);
@@ -593,7 +636,6 @@ async function updateAndDraw() {
         s.lastNominalLen = active.nominalLen;
     });
     
-    // Process spring physics iteration & warp calculations
     const stretchesToDelete = [];
     let maxScale = 1.00;
     let hasActivePinch = false;
@@ -634,7 +676,6 @@ async function updateAndDraw() {
         if (coords && anchorIdx < coords.length) {
             const anchorPos = coords[anchorIdx];
             
-            // Displace along the unit relative drag vector by the spring's warp distance
             const warpPinchPos = {
                 x: Math.round(anchorPos.x + s.lastDragVector.x * warpDist),
                 y: Math.round(anchorPos.y + s.lastDragVector.y * warpDist)
@@ -644,7 +685,6 @@ async function updateAndDraw() {
         }
     }
     
-    // Delete finished springs
     stretchesToDelete.forEach(hid => luffyStretches.delete(hid));
     
     // Clean mouth trackers for deleted faces
@@ -683,7 +723,6 @@ async function updateAndDraw() {
                 const leftCorner = mMetrics.leftCorner;
                 const rightCorner = mMetrics.rightCorner;
                 
-                // Edge protection
                 if (leftCorner.x > margin && leftCorner.x < w - margin &&
                     leftCorner.y > margin && leftCorner.y < h - margin &&
                     rightCorner.x > margin && rightCorner.x < w - margin &&
@@ -723,17 +762,14 @@ async function updateAndDraw() {
     
     // Debug Overlays
     if (showDebug) {
-        // Draw face landmarks
         for (let [fid, coords] of trackedFaces) {
             ctx.fillStyle = '#00ff00';
-            coords.forEach(pt => {
-                ctx.beginPath();
-                ctx.arc(pt.x, pt.y, 1.5, 0, 2 * Math.PI);
-                ctx.fill();
-            });
+            for (let i = 0; i < coords.length; i++) {
+                const pt = coords[i];
+                ctx.fillRect(pt.x - 1, pt.y - 1, 2, 2);
+            }
         }
         
-        // Draw hand landmarks and chains
         for (let [hid, hand] of trackedHands) {
             const landmarks = hand.landmarks;
             const color = hand.label === 'Left' ? '#00d2ff' : '#ffd700';
@@ -741,11 +777,10 @@ async function updateAndDraw() {
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
             
-            landmarks.forEach(pt => {
-                ctx.beginPath();
-                ctx.arc(pt.x, pt.y, 4, 0, 2 * Math.PI);
-                ctx.fill();
-            });
+            for (let i = 0; i < landmarks.length; i++) {
+                const pt = landmarks[i];
+                ctx.fillRect(pt.x - 3, pt.y - 3, 6, 6);
+            }
             
             const chains = [
                 [0, 1, 2, 3, 4],
@@ -766,42 +801,40 @@ async function updateAndDraw() {
     }
 }
 
-// Bilinear pixel interpolation mapping
+// ─── Bilinear pixel interpolation mapping ───
 function bilinearRemap(src, w, h, x, y, dst, dstIdx) {
     if (x < 0) x = 0;
     if (x > w - 1) x = w - 1;
     if (y < 0) y = 0;
     if (y > h - 1) y = h - 1;
     
-    const x0 = Math.floor(x);
-    const x1 = Math.min(w - 1, x0 + 1);
-    const y0 = Math.floor(y);
-    const y1 = Math.min(h - 1, y0 + 1);
+    const x0 = x | 0; // fast floor
+    const x1 = x0 < w - 1 ? x0 + 1 : x0;
+    const y0 = y | 0;
+    const y1 = y0 < h - 1 ? y0 + 1 : y0;
     
     const dx = x - x0;
     const dy = y - y0;
+    const dxI = 1 - dx;
+    const dyI = 1 - dy;
     
-    const idx00 = (y0 * w + x0) * 4;
-    const idx01 = (y0 * w + x1) * 4;
-    const idx10 = (y1 * w + x0) * 4;
-    const idx11 = (y1 * w + x1) * 4;
+    const idx00 = (y0 * w + x0) << 2;
+    const idx01 = (y0 * w + x1) << 2;
+    const idx10 = (y1 * w + x0) << 2;
+    const idx11 = (y1 * w + x1) << 2;
     
-    for (let i = 0; i < 4; i++) {
-        const val00 = src[idx00 + i];
-        const val01 = src[idx01 + i];
-        const val10 = src[idx10 + i];
-        const val11 = src[idx11 + i];
-        
-        const val = (1 - dx) * (1 - dy) * val00 +
-                    dx * (1 - dy) * val01 +
-                    (1 - dx) * dy * val10 +
-                    dx * dy * val11;
-                    
-        dst[dstIdx + i] = Math.round(val);
-    }
+    const w00 = dxI * dyI;
+    const w01 = dx * dyI;
+    const w10 = dxI * dy;
+    const w11 = dx * dy;
+    
+    dst[dstIdx]     = (w00 * src[idx00]     + w01 * src[idx01]     + w10 * src[idx10]     + w11 * src[idx11]    ) + 0.5 | 0;
+    dst[dstIdx + 1] = (w00 * src[idx00 + 1] + w01 * src[idx01 + 1] + w10 * src[idx10 + 1] + w11 * src[idx11 + 1]) + 0.5 | 0;
+    dst[dstIdx + 2] = (w00 * src[idx00 + 2] + w01 * src[idx01 + 2] + w10 * src[idx10 + 2] + w11 * src[idx11 + 2]) + 0.5 | 0;
+    dst[dstIdx + 3] = 255; // Alpha always fully opaque
 }
 
-// Directional Warp Algorithm in JS Canvas Image Data
+// ─── Directional Warp Algorithm (IMPROVED — no tearing) ───
 function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     const anchorPos = coords[anchorIdx];
     const ax = anchorPos.x;
@@ -813,7 +846,7 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     const dy = py - ay;
     const dist = Math.sqrt(dx * dx + dy * dy);
     
-    if (dist < 3) return;
+    if (dist < 2) return;
     
     const ux = dx / dist;
     const uy = dy / dist;
@@ -822,16 +855,16 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     if (isFace && coords.length >= 264) {
         const eyeDistance = calculateDistance(coords[33], coords[263]);
         const base = eyeDistance === 0 ? 1.0 : eyeDistance;
-        R = Math.round(base * 1.3);
-        R_in = Math.round(base * 1.0);
-        R_out = Math.round(base * 0.3);
+        R = Math.round(base * 1.4);
+        R_in = Math.round(base * 1.1);
+        R_out = Math.round(base * 0.4);
     } else {
         if (coords.length >= 10) {
             const handSize = calculateDistance(coords[0], coords[9]);
             const base = handSize === 0 ? 1.0 : handSize;
-            R = Math.round(base * 1.0);
-            R_in = Math.round(base * 0.8);
-            R_out = Math.round(base * 0.3);
+            R = Math.round(base * 1.1);
+            R_in = Math.round(base * 0.9);
+            R_out = Math.round(base * 0.35);
         } else {
             R = 100; R_in = 80; R_out = 30;
         }
@@ -840,7 +873,7 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     const canvasW = canvasElement.width;
     const canvasH = canvasElement.height;
     
-    const margin = Math.max(R, R_in) + 10;
+    const margin = Math.max(R, R_in) + 15;
     const xMin = Math.max(0, Math.floor(Math.min(ax, px) - margin));
     const yMin = Math.max(0, Math.floor(Math.min(ay, py) - margin));
     const xMax = Math.min(canvasW, Math.ceil(Math.max(ax, px) + margin));
@@ -867,7 +900,6 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
             maskContext.closePath();
             maskContext.fill();
         } else {
-            // Hand
             maskContext.lineWidth = Math.round(R * 0.8);
             maskContext.lineCap = 'round';
             maskContext.lineJoin = 'round';
@@ -895,9 +927,12 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
         }
     }
 
-    // Draw the binary mask (sharp edges, no filter) to precisely check skin pixels
+    // Draw the soft feathered mask for blending (prevents hard-edge tearing)
     maskCanvas.width = w;
     maskCanvas.height = h;
+    maskCtx.clearRect(0, 0, w, h);
+    
+    // First pass: binary mask for skin detection
     maskCtx.filter = 'none';
     maskCtx.fillStyle = '#000';
     maskCtx.fillRect(0, 0, w, h);
@@ -906,33 +941,46 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
     drawSkinPath(maskCtx, xMin, yMin);
     const binaryMaskData = maskCtx.getImageData(0, 0, w, h).data;
     
+    // Second pass: feathered mask for smooth blending at boundaries
+    maskCtx.fillStyle = '#000';
+    maskCtx.fillRect(0, 0, w, h);
+    const featherPx = Math.max(4, Math.round(R * 0.08));
+    maskCtx.filter = `blur(${featherPx}px)`;
+    maskCtx.fillStyle = '#fff';
+    maskCtx.strokeStyle = '#fff';
+    drawSkinPath(maskCtx, xMin, yMin);
+    maskCtx.filter = 'none';
+    const featheredMaskData = maskCtx.getImageData(0, 0, w, h).data;
+    
     const imgData = ctx.getImageData(xMin, yMin, w, h);
     const src = imgData.data;
-    const dstData = ctx.createImageData(w, h);
-    dstData.data.set(src);
-    const dst = dstData.data;
+    const dst = new Uint8ClampedArray(src.length);
+    dst.set(src);
     
     const RSq = R * R;
+    const invRSq = 1.0 / RSq;
     const wx0 = xMin - ax;
-    const ux_step = ux;
+    
+    // Reduced strength to prevent tearing at high stretch
+    const strength = 0.85;
     
     for (let y = 0; y < h; y++) {
         const globalY = y + yMin;
         const wy = globalY - ay;
         const wy2 = wy * wy;
-        const t_const = wx0 * ux + wy * uy;
+        const t_base = wx0 * ux + wy * uy;
         
         let wx = wx0;
-        let t = t_const;
+        let t = t_base;
         
         for (let x = 0; x < w; x++) {
             const d2 = wx * wx + wy2;
             const dPerpSq = d2 - t * t;
             
             if (dPerpSq < RSq) {
-                const diff = 1.0 - dPerpSq / RSq;
-                const g = diff * diff;
-                const strength = 0.98;
+                const diff = 1.0 - dPerpSq * invRSq;
+                // Smoother cubic falloff instead of quadratic (prevents abrupt edges)
+                const g = diff * diff * diff;
                 const k = g * strength;
                 
                 let disp = 0;
@@ -943,33 +991,45 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
                     disp = dist * k * diff2 * diff2;
                 }
                 
-                if (disp !== 0) {
+                if (disp > 0.5) {
                     const srcLocalX = x - disp * ux;
                     const srcLocalY = y - disp * uy;
                     
-                    const srcXInt = Math.round(srcLocalX);
-                    const srcYInt = Math.round(srcLocalY);
+                    const srcXInt = (srcLocalX + 0.5) | 0;
+                    const srcYInt = (srcLocalY + 0.5) | 0;
+                    
+                    // Check feathered mask alpha at destination
+                    const dstMaskIdx = (y * w + x) * 4;
+                    const dstAlpha = featheredMaskData[dstMaskIdx];
+                    
+                    if (dstAlpha < 5) {
+                        wx++;
+                        t += ux;
+                        continue;
+                    }
+                    
+                    // Check if source pixel is within skin (binary mask)
                     let isSrcSkin = false;
                     if (srcXInt >= 0 && srcXInt < w && srcYInt >= 0 && srcYInt < h) {
                         isSrcSkin = binaryMaskData[(srcYInt * w + srcXInt) * 4] > 127;
                     }
                     
-                    const isDstSkin = binaryMaskData[(y * w + x) * 4] > 127;
+                    const isDstSkin = binaryMaskData[dstMaskIdx] > 127;
                     
                     if (isDstSkin || isSrcSkin) {
                         let finalSrcX = srcLocalX;
                         let finalSrcY = srcLocalY;
                         
                         if (isDstSkin && !isSrcSkin) {
-                            // Clamping binary search along the drag vector to stay within skin bounds
+                            // Improved binary search with 8 iterations for smoother clamping
                             let low = 0;
                             let high = disp;
-                            for (let i = 0; i < 4; i++) {
-                                const mid = (low + high) / 2;
+                            for (let i = 0; i < 8; i++) {
+                                const mid = (low + high) * 0.5;
                                 const tx = x - mid * ux;
                                 const ty = y - mid * uy;
-                                const txInt = Math.round(tx);
-                                const tyInt = Math.round(ty);
+                                const txInt = (tx + 0.5) | 0;
+                                const tyInt = (ty + 0.5) | 0;
                                 if (txInt >= 0 && txInt < w && tyInt >= 0 && tyInt < h && binaryMaskData[(tyInt * w + txInt) * 4] > 127) {
                                     low = mid;
                                 } else {
@@ -980,89 +1040,108 @@ function warpImageDirectional(coords, anchorIdx, pinchPos, isFace) {
                             finalSrcY = y - low * uy;
                         }
                         
-                        bilinearRemap(src, w, h, finalSrcX, finalSrcY, dst, (y * w + x) * 4);
+                        // Bilinear remap into a temporary pixel
+                        const tmpIdx = dstMaskIdx; // reuse same index for dst
+                        bilinearRemap(src, w, h, finalSrcX, finalSrcY, dst, tmpIdx);
+                        
+                        // Alpha-blend using feathered mask to eliminate hard seam tearing
+                        if (dstAlpha < 250) {
+                            const blendA = dstAlpha / 255.0;
+                            const blendB = 1.0 - blendA;
+                            dst[tmpIdx]     = (dst[tmpIdx]     * blendA + src[tmpIdx]     * blendB + 0.5) | 0;
+                            dst[tmpIdx + 1] = (dst[tmpIdx + 1] * blendA + src[tmpIdx + 1] * blendB + 0.5) | 0;
+                            dst[tmpIdx + 2] = (dst[tmpIdx + 2] * blendA + src[tmpIdx + 2] * blendB + 0.5) | 0;
+                        }
                     }
                 }
             }
             wx++;
-            t += ux_step;
+            t += ux;
         }
     }
     
-    ctx.putImageData(dstData, xMin, yMin);
+    imgData.data.set(dst);
+    ctx.putImageData(imgData, xMin, yMin);
 }
 
-// Composition-Based Feathered Mouth Warper (GPU Accelerated)
+// ─── Composition-Based Feathered Mouth Warper (reuses cached canvases) ───
 function warpImageMouth(mouthMetrics, scaleX, scaleY) {
     const center = mouthMetrics.center;
     const width = mouthMetrics.width;
-    const h = canvasElement.height;
-    const w = canvasElement.width;
+    const cH = canvasElement.height;
+    const cW = canvasElement.width;
     
     const bw = Math.round(width * 2.2);
     const bh = Math.round(width * 1.1);
     
     let bx = Math.max(0, center.x - Math.round(bw / 2));
     let by = Math.max(0, center.y - Math.round(bh / 2));
-    const finalBw = Math.min(w - bx, bw);
-    const finalBh = Math.min(h - by, bh);
+    const finalBw = Math.min(cW - bx, bw);
+    const finalBh = Math.min(cH - by, bh);
     
     if (finalBw <= 15 || finalBh <= 15) return;
     
-    // Crop the mouth from output canvas
-    const offscreenMouth = document.createElement('canvas');
-    offscreenMouth.width = finalBw;
-    offscreenMouth.height = finalBh;
-    const offCtx = offscreenMouth.getContext('2d');
-    offCtx.drawImage(canvasElement, bx, by, finalBw, finalBh, 0, 0, finalBw, finalBh);
+    // Crop the mouth from output canvas (reuse cached canvas)
+    if (_mouthCropCanvas.width !== finalBw || _mouthCropCanvas.height !== finalBh) {
+        _mouthCropCanvas.width = finalBw;
+        _mouthCropCanvas.height = finalBh;
+    } else {
+        _mouthCropCtx.clearRect(0, 0, finalBw, finalBh);
+    }
+    _mouthCropCtx.drawImage(canvasElement, bx, by, finalBw, finalBh, 0, 0, finalBw, finalBh);
     
     // Stretched canvas
     const stretchedW = Math.round(finalBw * scaleX);
     const stretchedH = Math.round(finalBh * scaleY);
     if (stretchedW <= 10 || stretchedH <= 10) return;
     
-    const stretchedCanvas = document.createElement('canvas');
-    stretchedCanvas.width = stretchedW;
-    stretchedCanvas.height = stretchedH;
-    const strCtx = stretchedCanvas.getContext('2d');
-    strCtx.drawImage(offscreenMouth, 0, 0, finalBw, finalBh, 0, 0, stretchedW, stretchedH);
+    if (_mouthStretchCanvas.width !== stretchedW || _mouthStretchCanvas.height !== stretchedH) {
+        _mouthStretchCanvas.width = stretchedW;
+        _mouthStretchCanvas.height = stretchedH;
+    } else {
+        _mouthStretchCtx.clearRect(0, 0, stretchedW, stretchedH);
+    }
+    _mouthStretchCtx.globalCompositeOperation = 'source-over';
+    _mouthStretchCtx.drawImage(_mouthCropCanvas, 0, 0, finalBw, finalBh, 0, 0, stretchedW, stretchedH);
     
-    // Create soft elliptical mask
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = stretchedW;
-    maskCanvas.height = stretchedH;
-    const mCtx = maskCanvas.getContext('2d');
+    // Create soft elliptical mask (reuse cached canvas)
+    if (_mouthMaskCanvas.width !== stretchedW || _mouthMaskCanvas.height !== stretchedH) {
+        _mouthMaskCanvas.width = stretchedW;
+        _mouthMaskCanvas.height = stretchedH;
+    } else {
+        _mouthMaskCtx.clearRect(0, 0, stretchedW, stretchedH);
+    }
     
     const rx = Math.max(1, Math.round(stretchedW / 2) - 2);
     const ry = Math.max(1, Math.round(stretchedH / 2) - 2);
     
-    mCtx.fillStyle = '#000';
-    mCtx.fillRect(0, 0, stretchedW, stretchedH);
+    _mouthMaskCtx.fillStyle = '#000';
+    _mouthMaskCtx.fillRect(0, 0, stretchedW, stretchedH);
     
-    // Draw blurred white ellipse
     const blurSize = Math.max(5, Math.round(width * 0.1));
-    mCtx.filter = `blur(${blurSize}px)`;
-    mCtx.fillStyle = '#fff';
-    mCtx.beginPath();
-    mCtx.ellipse(Math.round(stretchedW / 2), Math.round(stretchedH / 2), rx - blurSize, ry - blurSize, 0, 0, 2 * Math.PI);
-    mCtx.fill();
+    _mouthMaskCtx.filter = `blur(${blurSize}px)`;
+    _mouthMaskCtx.fillStyle = '#fff';
+    _mouthMaskCtx.beginPath();
+    _mouthMaskCtx.ellipse(Math.round(stretchedW / 2), Math.round(stretchedH / 2), Math.max(1, rx - blurSize), Math.max(1, ry - blurSize), 0, 0, 2 * Math.PI);
+    _mouthMaskCtx.fill();
+    _mouthMaskCtx.filter = 'none';
     
     // Blend stretched mouth with mask using destination-in
-    strCtx.globalCompositeOperation = 'destination-in';
-    strCtx.drawImage(maskCanvas, 0, 0);
+    _mouthStretchCtx.globalCompositeOperation = 'destination-in';
+    _mouthStretchCtx.drawImage(_mouthMaskCanvas, 0, 0);
+    _mouthStretchCtx.globalCompositeOperation = 'source-over';
     
     // Paint blended mouth back onto main canvas
     let tx = center.x - Math.round(stretchedW / 2);
     let ty = center.y - Math.round(stretchedH / 2);
     
-    // Clamp
-    tx = Math.max(5, Math.min(w - stretchedW - 5, tx));
-    ty = Math.max(5, Math.min(h - stretchedH - 5, ty));
+    tx = Math.max(5, Math.min(cW - stretchedW - 5, tx));
+    ty = Math.max(5, Math.min(cH - stretchedH - 5, ty));
     
-    ctx.drawImage(stretchedCanvas, tx, ty);
+    ctx.drawImage(_mouthStretchCanvas, tx, ty);
 }
 
-// Toggle Debug View
+// ─── Toggle Debug View ───
 function toggleDebug() {
     showDebug = !showDebug;
     const btn = document.getElementById('dbg-button');
@@ -1075,65 +1154,61 @@ function toggleDebug() {
     }
 }
 
+// ─── Decoupled Render Loop ───
 let isLoopRunning = false;
-async function processVideoFrame() {
-    if (videoElement.paused || videoElement.ended) {
-        requestAnimationFrame(processVideoFrame);
-        return;
+let mpInterval = null;
+
+function renderLoop() {
+    if (videoElement.readyState >= 2 && !videoElement.paused && !videoElement.ended) {
+        updateAndDraw();
     }
-    try {
-        mpCtx.drawImage(videoElement, 0, 0, 384, 216);
-        await holistic.send({ image: mpCanvas });
-        await updateAndDraw();
-    } catch (err) {
-        console.error("Frame processing error:", err);
-    }
-    requestAnimationFrame(processVideoFrame);
+    requestAnimationFrame(renderLoop);
 }
 
-// Start camera capture and media loops
+// ─── Start camera capture and media loops ───
 async function init() {
     console.log("init() called. Requesting webcam access...");
     try {
         let stream;
-        // Prioritize simple video constraints for instant camera startup
         try {
             stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
                 audio: false
             });
-        } catch (genericError) {
-            console.warn("Generic camera request failed, trying with HD constraints:", genericError);
+        } catch (hdError) {
+            console.warn("HD camera request failed, trying generic:", hdError);
             stream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                    facingMode: 'user'
-                },
+                video: true,
                 audio: false
             });
         }
         console.log("Webcam stream access granted.");
         videoElement.srcObject = stream;
         
-        if (videoElement.readyState >= 2) {
+        function startLoops() {
             videoElement.play();
+            resizeCanvas();
             if (!isLoopRunning) {
                 isLoopRunning = true;
-                requestAnimationFrame(processVideoFrame);
+                // Render loop runs at display refresh rate (60Hz)
+                requestAnimationFrame(renderLoop);
+                // MediaPipe inference runs independently at ~15-20 fps to avoid blocking rendering
+                mpInterval = setInterval(sendFrameToMediaPipe, 55);
             }
+        }
+        
+        if (videoElement.readyState >= 2) {
+            startLoops();
         } else {
-            videoElement.addEventListener('loadedmetadata', () => {
-                videoElement.play();
-                if (!isLoopRunning) {
-                    isLoopRunning = true;
-                    requestAnimationFrame(processVideoFrame);
-                }
-            });
+            videoElement.addEventListener('loadedmetadata', startLoops, { once: true });
         }
     } catch (err) {
         console.error("Webcam access failed:", err);
-        alert("Could not access your webcam. Please check browser camera permissions.");
+        if (loadingBanner) {
+            loadingBanner.innerHTML = '⚠️ WEBCAM ACCESS DENIED — Please allow camera permissions and reload.';
+            loadingBanner.style.borderColor = '#ff5252';
+            loadingBanner.style.color = '#ff5252';
+        }
     }
 }
 

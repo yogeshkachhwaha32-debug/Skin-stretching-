@@ -2,10 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="description" content="Experience real-time interactive face stretching and elastic warping animations powered by computer vision. Pinch, drag, and stretch landmarks directly in your browser.">
     <title>Skin Stretching Simulation - Vercel Portal</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     
@@ -19,13 +21,13 @@
         <!-- Canvas where we render the webcam stream and apply real-time warp overlays -->
         <canvas id="output-canvas" width="1280" height="720"></canvas>
         <div id="loading-banner">
-            INITIALIZING WEBCAM & AI MODELS...
+            ⚡ INITIALIZING WEBCAM &amp; AI MODELS...
         </div>
     </div>
     
     <div class="header-panel">
-        <h1 style="font-size: 1.8rem; line-height: 1.2; margin: 0;">SKIN STRETCHING SIMULATION</h1>
-        <p class="subtitle" style="margin: 5px 0 0 0; font-size: 0.95rem; font-weight: 300; color: #888a9e;">OBLIQ AI Educational Foundation</p>
+        <h1>SKIN STRETCHING SIMULATION</h1>
+        <p class="subtitle">OBLIQ AI Educational Foundation</p>
     </div>
 
     <div class="footer-taskbar">

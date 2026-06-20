@@ -6,6 +6,12 @@
     --glow: 0 0 20px rgba(0, 210, 255, 0.35);
 }
 
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
 body {
     margin: 0;
     padding: 0;
@@ -18,9 +24,9 @@ body {
     display: flex;
 }
 
-/* Full screen webcam view */
+/* Full screen webcam view — covers entire viewport seamlessly */
 .video-container {
-    position: absolute;
+    position: fixed;
     top: 0;
     left: 0;
     width: 100vw;
@@ -35,10 +41,13 @@ body {
     height: 100%;
     object-fit: cover;
     display: block;
+    /* GPU compositing for smoother rendering */
+    will-change: contents;
 }
 
 #output-canvas {
     transform: scaleX(-1); /* Mirror view for natural interaction */
+    image-rendering: auto;
 }
 
 #loading-banner {
@@ -46,41 +55,63 @@ body {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    background: rgba(11, 11, 18, 0.85);
+    background: rgba(11, 11, 18, 0.92);
     border: 1px solid var(--primary);
-    padding: 20px 40px;
-    border-radius: 12px;
+    padding: 24px 48px;
+    border-radius: 16px;
     font-weight: 600;
-    font-size: 1.2rem;
+    font-size: 1.15rem;
     color: var(--primary);
-    box-shadow: var(--glow);
-    z-index: 10;
-    transition: opacity 0.5s ease;
+    box-shadow: var(--glow), inset 0 0 30px rgba(0, 210, 255, 0.05);
+    z-index: 100;
+    transition: opacity 0.6s ease;
     pointer-events: none;
+    letter-spacing: 1px;
+    text-align: center;
+    animation: loadPulse 2s ease-in-out infinite;
+}
+
+@keyframes loadPulse {
+    0%, 100% { opacity: 0.85; }
+    50% { opacity: 1; }
 }
 
 /* Center Floating Header Panel */
 .header-panel {
     position: fixed;
-    top: 25px;
+    top: 18px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 10;
-    padding: 15px 35px;
+    padding: 12px 32px;
     text-align: center;
-    pointer-events: none; /* Let clicks pass through to webcam canvas */
+    pointer-events: none;
+    background: rgba(10, 10, 18, 0.35);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 h1 {
-    font-size: 1.8rem;
+    font-size: 1.6rem;
     line-height: 1.2;
     margin: 0;
     font-weight: 800;
     letter-spacing: -0.5px;
-    background: linear-gradient(45deg, var(--primary), #b000ff);
+    background: linear-gradient(135deg, var(--primary), #b000ff, #ff7800);
+    background-size: 200% 200%;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradientShift 6s ease infinite;
     transition: transform 0.3s ease;
+}
+
+@keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
 
 h1:hover {
@@ -88,10 +119,11 @@ h1:hover {
 }
 
 p.subtitle {
-    color: #888a9e;
-    margin: 5px 0 0 0;
-    font-size: 0.95rem;
+    color: rgba(136, 138, 158, 0.9);
+    margin: 4px 0 0 0;
+    font-size: 0.85rem;
     font-weight: 300;
+    letter-spacing: 0.5px;
 }
 
 .content-wrapper {
@@ -222,41 +254,25 @@ p.subtitle {
     to { opacity: 1; }
 }
 
-/* Responsive adjustments for mobile devices */
-@media (max-width: 768px) {
-    .header-panel {
-        width: 90%;
-        padding: 10px 20px;
-    }
-    h1 {
-        font-size: 1.4rem;
-    }
-    p.subtitle {
-        font-size: 0.8rem;
-    }
-    .footer-taskbar {
-        display: none; /* Hide taskbar on small mobile screens */
-    }
-}
-
 /* Footer Taskbar styles */
 .footer-taskbar {
     position: fixed;
-    bottom: 20px;
-    left: 20px;
-    right: 20px;
-    height: 60px;
+    bottom: 16px;
+    left: 16px;
+    right: 16px;
+    height: 54px;
     z-index: 10;
-    background: rgba(10, 10, 18, 0.65);
+    background: rgba(10, 10, 18, 0.55);
     backdrop-filter: blur(25px);
     -webkit-backdrop-filter: blur(25px);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
+    border-radius: 14px;
     display: flex;
     align-items: center;
-    padding: 0 25px;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    padding: 0 22px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     box-sizing: border-box;
+    transition: opacity 0.3s ease;
 }
 
 .taskbar-content {
@@ -269,11 +285,11 @@ p.subtitle {
 }
 
 .taskbar-content::-webkit-scrollbar {
-    display: none; /* Hide scrollbar for taskbar content */
+    display: none;
 }
 
 .taskbar-label {
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     font-weight: 800;
     text-transform: uppercase;
     color: var(--primary);
@@ -281,17 +297,51 @@ p.subtitle {
 }
 
 .taskbar-item {
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     color: #b0b1c5;
 }
 
+.taskbar-item strong {
+    color: rgba(255, 255, 255, 0.85);
+}
+
 .taskbar-divider {
-    color: rgba(255, 255, 255, 0.15);
+    color: rgba(255, 255, 255, 0.12);
     font-weight: 300;
+}
+
+/* ─── Responsive adjustments ─── */
+@media (max-width: 768px) {
+    .header-panel {
+        width: 92%;
+        padding: 8px 16px;
+        top: 10px;
+    }
+    h1 {
+        font-size: 1.2rem;
+    }
+    p.subtitle {
+        font-size: 0.72rem;
+    }
+    .footer-taskbar {
+        display: none;
+    }
 }
 
 @media (max-width: 992px) {
     .footer-taskbar {
-        right: 20px; /* Take full width if sidebar is hidden or moves */
+        right: 16px;
+    }
+}
+
+@media (min-width: 1600px) {
+    h1 {
+        font-size: 1.9rem;
+    }
+    .footer-taskbar {
+        height: 60px;
+        bottom: 24px;
+        left: 24px;
+        right: 24px;
     }
 }
